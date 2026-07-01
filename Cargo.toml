@@ -1,0 +1,13 @@
+[package]
+name = "ac_lib_parser"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "bundle"
+path = "src/main.rs"
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+

@@ -2,6 +2,15 @@
 name = "ac_lib_parser"
 version = "0.1.0"
 edition = "2021"
+licnse = "MIT"
+description = "Rust submission library bundler for AtCoder"
+readme = "README.md"
+repository = "https://github.com/Fe2O3-Tpa/ac-lib-bundle"
+homepage = "https://github.com/Fe2O3-Tpa/ac-lib-bundle"
+keywords = ["atcoder", "rust", "cli", "bundle"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = ["target/*", ".git/*"]
+
 
 [[bin]]
 name = "ac-lib-bundle"
@@ -10,4 +19,3 @@ path = "src/main.rs"
 [dependencies]
 syn = { version = "2", features = ["full"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
-

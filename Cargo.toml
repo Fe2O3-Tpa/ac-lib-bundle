@@ -2,7 +2,7 @@
 name = "ac-lib-bundle"
 version = "0.1.0"
 edition = "2021"
-licnse = "MIT"
+license = "MIT"
 description = "Rust submission library bundler for AtCoder"
 readme = "README.md"
 repository = "https://github.com/Fe2O3-Tpa/ac-lib-bundle"

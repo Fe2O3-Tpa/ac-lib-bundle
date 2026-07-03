@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "ac_lib_parser"
+name = "ac-lib-bundle"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",

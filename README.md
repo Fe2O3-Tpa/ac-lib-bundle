@@ -4,11 +4,19 @@ Rust の提出用コードを 1 ファイルに束ねる CLI ツールです。
 
 ## 使い方
 
-```bash
-ac-lib-bundle src/problem/src/bin/typical90-l.rs
-ac-lib-bundle src/problem/src/bin/typical90-l.rs -o output.rs
-ac-lib-bundle src/problem/src/bin/typical90-l.rs --stdout
-```
+### `ac-lib-bundle {path_to_target}`
+
+`{path_to_target}`のバンドル結果を標準出力に出力します。
+`--stdout`をつけたときと同じです。
+
+### `ac-lib-bundle {path_to_target} -o output.rs`
+
+`{path_to_target}`のバンドル結果を標準出力に出力します。
+
+### `ac-lib-bundle {path_to_target} --stdout`
+
+`{path_to_output}`に`{path_to_target}`のバンドル結果を出力します。
+上書きされるので注意してください。
 
 ## 何をするか
 

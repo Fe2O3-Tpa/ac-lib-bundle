@@ -319,8 +319,13 @@ impl Bundler {
 
     fn bundle_input(&mut self, input: &Path) -> Result<String> {
         let manifest = self.workspace.manifest.clone();
-        let source = fs::read_to_string(input)
-            .map_err(|_| format!("error:\ninput file not found: {}", input.display()))?;
+        let source = fs::read_to_string(input).map_err(|_| {
+            format!(
+                "error:
+input file not found: {}",
+                input.display()
+            )
+        })?;
         let file = syn::parse_file(&source)
             .map_err(|e| format!("failed to parse {}: {e}", input.display()))?;
 
@@ -331,10 +336,15 @@ impl Bundler {
             &manifest,
             &manifest.local_aliases(),
             &manifest.local_aliases(),
+            &HashSet::new(),
         )
     }
 
-    fn render_crate(&mut self, lib_path: &Path) -> Result<String> {
+    fn render_crate(
+        &mut self,
+        lib_path: &Path,
+        required_modules: &HashSet<String>,
+    ) -> Result<String> {
         let canonical = fs::canonicalize(lib_path).map_err(|_| module_not_found_error(lib_path))?;
         if !self.visited_crates.insert(canonical.clone()) {
             return Ok(String::new());
@@ -357,6 +367,7 @@ impl Bundler {
             &manifest,
             &manifest.local_aliases(),
             &manifest.dep_aliases(),
+            required_modules,
         )
     }
 
@@ -368,15 +379,22 @@ impl Bundler {
         manifest: &Manifest,
         aliases_to_rewrite: &[String],
         child_aliases_to_render: &[String],
+        required_modules: &HashSet<String>,
     ) -> Result<String> {
         self.reject_unsupported_attrs(&file.attrs)?;
 
         let used_aliases = self.used_local_aliases(source, child_aliases_to_render);
+        let used_alias_requirements =
+            self.used_local_alias_requirements(source, child_aliases_to_render);
         let mut output = String::new();
         for alias in used_aliases {
             if let Some(lib_path) = manifest.resolve_alias(&alias) {
                 if lib_path.exists() {
-                    output.push_str(&self.render_crate(&lib_path)?);
+                    let required = used_alias_requirements
+                        .get(&alias)
+                        .cloned()
+                        .unwrap_or_default();
+                    output.push_str(&self.render_crate(&lib_path, &required)?);
                     if !output.ends_with('\n') && !output.is_empty() {
                         output.push('\n');
                     }
@@ -399,6 +417,10 @@ impl Bundler {
 
             match item {
                 Item::Mod(module) if module.content.is_none() => {
+                    if !self.should_expand_module(module, source, required_modules) {
+                        cursor = end;
+                        continue;
+                    }
                     let child = self.resolve_module_path(source_path, module)?;
                     let child_source =
                         fs::read_to_string(&child).map_err(|_| module_not_found_error(&child))?;
@@ -411,6 +433,7 @@ impl Bundler {
                         manifest,
                         aliases_to_rewrite,
                         child_aliases_to_render,
+                        &HashSet::new(),
                     )?;
                     if !child_text.is_empty() {
                         out.push_str(&inline_module_header(item_text));
@@ -460,6 +483,21 @@ impl Bundler {
         aliases
     }
 
+    fn used_local_alias_requirements(
+        &self,
+        source: &str,
+        candidates: &[String],
+    ) -> HashMap<String, HashSet<String>> {
+        let mut requirements = HashMap::new();
+        for alias in candidates {
+            let modules = extract_required_modules_for_alias(source, alias);
+            if !modules.is_empty() {
+                requirements.insert(alias.clone(), modules);
+            }
+        }
+        requirements
+    }
+
     fn reject_unsupported_attrs(&self, attrs: &[Attribute]) -> Result<()> {
         for attr in attrs {
             if is_unsupported_attr(attr) {
@@ -488,6 +526,16 @@ impl Bundler {
         }
 
         Err(format!("error:\nmodule \"{module_name}\" not found"))
+    }
+
+    fn should_expand_module(
+        &self,
+        module: &syn::ItemMod,
+        source: &str,
+        required_modules: &HashSet<String>,
+    ) -> bool {
+        let name = module.ident.to_string();
+        required_modules.contains(&name) || source.contains(&format!("{name}::"))
     }
 }
 
@@ -531,6 +579,65 @@ fn rewrite_local_crate_refs(source: &str, aliases: &[String]) -> String {
         output = output.replace(&pattern, "crate::");
     }
     output
+}
+
+fn extract_required_modules_for_alias(source: &str, alias: &str) -> HashSet<String> {
+    let mut modules = HashSet::new();
+    let pattern = format!("{alias}::");
+    let mut offset = 0usize;
+
+    while let Some(pos) = source[offset..].find(&pattern) {
+        let mut tail = &source[offset + pos + pattern.len()..];
+        tail = tail.trim_start();
+
+        if let Some(stripped) = tail.strip_prefix('{') {
+            let mut depth = 1usize;
+            let mut inner = String::new();
+            for ch in stripped.chars() {
+                match ch {
+                    '{' => {
+                        depth += 1;
+                        inner.push(ch);
+                    }
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                        inner.push(ch);
+                    }
+                    _ => inner.push(ch),
+                }
+            }
+            for part in inner.split(',') {
+                if let Some(module) = first_path_segment(part.trim()) {
+                    modules.insert(module);
+                }
+            }
+        } else if let Some(module) = first_path_segment(tail) {
+            modules.insert(module);
+        }
+
+        offset += pos + pattern.len();
+    }
+
+    modules
+}
+
+fn first_path_segment(text: &str) -> Option<String> {
+    let mut segment = String::new();
+    for ch in text.chars() {
+        if ch == ':' || ch == '{' || ch == '}' || ch == ';' || ch == ',' || ch.is_whitespace() {
+            break;
+        }
+        segment.push(ch);
+    }
+    let first = segment.split("::").next()?.trim();
+    if first.is_empty() {
+        None
+    } else {
+        Some(first.to_string())
+    }
 }
 
 fn inline_module_header(item_text: &str) -> String {

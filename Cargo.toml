@@ -1,6 +1,6 @@
 [package]
 name = "ac-lib-bundle"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 description = "Rust submission library bundler for AtCoder"
@@ -10,7 +10,6 @@ homepage = "https://github.com/Fe2O3-Tpa/ac-lib-bundle"
 keywords = ["atcoder", "rust", "cli", "bundle"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = ["target/*", ".git/*"]
-
 
 [[bin]]
 name = "ac-lib-bundle"

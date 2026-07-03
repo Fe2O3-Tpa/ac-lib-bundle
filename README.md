@@ -1,6 +1,7 @@
 # ac-lib-bundle
 
 Rust の提出用コードを 1 ファイルに束ねる CLI ツールです。
+インストール: `cargo install ac-lib-bundle`
 
 ## 使い方
 

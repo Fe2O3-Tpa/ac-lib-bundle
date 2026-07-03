@@ -5,9 +5,9 @@ Rust の提出用コードを 1 ファイルに束ねる CLI ツールです。
 ## 使い方
 
 ```bash
-bundle src/problem/src/bin/typical90-l.rs
-bundle src/problem/src/bin/typical90-l.rs -o output.rs
-bundle src/problem/src/bin/typical90-l.rs --stdout
+ac-lib-bundle src/problem/src/bin/typical90-l.rs
+ac-lib-bundle src/problem/src/bin/typical90-l.rs -o output.rs
+ac-lib-bundle src/problem/src/bin/typical90-l.rs --stdout
 ```
 
 ## 何をするか

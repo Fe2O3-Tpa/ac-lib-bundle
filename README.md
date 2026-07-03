@@ -11,12 +11,12 @@ Rust の提出用コードを 1 ファイルに束ねる CLI ツールです。
 
 ### `ac-lib-bundle {path_to_target} -o output.rs`
 
-`{path_to_target}`のバンドル結果を標準出力に出力します。
+`{path_to_output}`に`{path_to_target}`のバンドル結果を出力します。
+上書きされるので注意してください。
 
 ### `ac-lib-bundle {path_to_target} --stdout`
 
-`{path_to_output}`に`{path_to_target}`のバンドル結果を出力します。
-上書きされるので注意してください。
+`{path_to_target}`のバンドル結果を標準出力に出力します。
 
 ## 何をするか
 

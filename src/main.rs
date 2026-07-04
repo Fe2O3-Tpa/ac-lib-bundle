@@ -16,13 +16,20 @@ fn main() {
 
 fn run() -> Result<()> {
     let args = parse_args()?;
-    let input = fs::canonicalize(&args.input)
-        .map_err(|_| format!("error:\ninput file not found: {}", args.input.display()))?;
-
-    let workspace_root = find_workspace_root(&input)?;
+    let workspace_root = match &args.input {
+        InputSpec::Path(path) => {
+            let input = fs::canonicalize(path)
+                .map_err(|_| format!("error:\ninput file not found: {}", path.display()))?;
+            find_workspace_root(&input)?
+        }
+        InputSpec::Bin(_) => {
+            find_workspace_root(&std::env::current_dir().map_err(|e| e.to_string())?)?
+        }
+    };
     let workspace = Workspace::load(&workspace_root)?;
-    let mut bundler = Bundler::new(workspace);
+    let mut bundler = Bundler::new(workspace.clone());
 
+    let input = resolve_input_path(&args.input, &workspace)?;
     let output = bundler.bundle_input(&input)?;
 
     match args.output {
@@ -39,8 +46,13 @@ fn run() -> Result<()> {
 }
 
 struct Args {
-    input: PathBuf,
+    input: InputSpec,
     output: OutputTarget,
+}
+
+enum InputSpec {
+    Path(PathBuf),
+    Bin(String),
 }
 
 enum OutputTarget {
@@ -53,10 +65,28 @@ fn parse_args() -> Result<Args> {
     let mut output = OutputTarget::Stdout;
     let mut saw_o = false;
     let mut saw_stdout = false;
+    let mut saw_bin = false;
 
     let mut iter = env::args().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
+            "--bin" => {
+                let name = iter
+                    .next()
+                    .ok_or_else(|| "missing bin target after --bin".to_string())?;
+                if input.is_some() {
+                    return Err("multiple input values are not supported".to_string());
+                }
+                saw_bin = true;
+                input = Some(InputSpec::Bin(name));
+            }
+            _ if arg.starts_with("--bin=") => {
+                if input.is_some() {
+                    return Err("multiple input values are not supported".to_string());
+                }
+                saw_bin = true;
+                input = Some(InputSpec::Bin(arg["--bin=".len()..].to_string()));
+            }
             "-o" => {
                 let path = iter
                     .next()
@@ -79,15 +109,146 @@ fn parse_args() -> Result<Args> {
             }
             _ => {
                 if input.is_some() {
-                    return Err("multiple input files are not supported".to_string());
+                    return Err("multiple input values are not supported".to_string());
                 }
-                input = Some(PathBuf::from(arg));
+                if saw_bin {
+                    return Err("`--bin` cannot be combined with a positional target".to_string());
+                }
+                input = Some(match interpret_positional_input(&arg) {
+                    PositionalInput::Path(path) => InputSpec::Path(path),
+                    PositionalInput::Bin(name) => InputSpec::Bin(name),
+                });
             }
         }
     }
 
     let input = input.ok_or_else(|| "missing input file".to_string())?;
     Ok(Args { input, output })
+}
+
+enum PositionalInput {
+    Path(PathBuf),
+    Bin(String),
+}
+
+fn interpret_positional_input(arg: &str) -> PositionalInput {
+    let path = PathBuf::from(arg);
+    if path.exists()
+        || arg.contains('/')
+        || arg.contains('\\')
+        || arg.starts_with('.')
+        || arg.ends_with(".rs")
+    {
+        PositionalInput::Path(path)
+    } else {
+        PositionalInput::Bin(arg.to_string())
+    }
+}
+
+fn resolve_input_path(input: &InputSpec, workspace: &Workspace) -> Result<PathBuf> {
+    match input {
+        InputSpec::Path(path) => fs::canonicalize(path)
+            .map_err(|_| format!("error:\ninput file not found: {}", path.display())),
+        InputSpec::Bin(name) => resolve_bin_target(workspace, name),
+    }
+}
+
+fn resolve_bin_target(workspace: &Workspace, bin: &str) -> Result<PathBuf> {
+    let manifest = &workspace.manifest;
+    let manifest_dir = &manifest.manifest_dir;
+    let normalized_bin = normalize_crate_name(bin);
+
+    if let Some(path) = resolve_explicit_bin_target(manifest_dir, bin, &normalized_bin)? {
+        return Ok(path);
+    }
+
+    let conventional = [
+        manifest_dir.join("src/bin").join(format!("{bin}.rs")),
+        manifest_dir.join("src/bin").join(bin).join("main.rs"),
+        manifest_dir.join("examples").join(format!("{bin}.rs")),
+        manifest_dir.join("tests").join(format!("{bin}.rs")),
+    ];
+    if let Some(path) = conventional.into_iter().find(|path| path.exists()) {
+        return Ok(path);
+    }
+
+    if manifest
+        .package_name
+        .as_ref()
+        .map(|name| normalize_crate_name(name) == normalized_bin)
+        .unwrap_or(false)
+    {
+        let main_rs = manifest_dir.join("src/main.rs");
+        if main_rs.exists() {
+            return Ok(main_rs);
+        }
+    }
+
+    Err(format!("bin target `{bin}` was not found"))
+}
+
+fn resolve_explicit_bin_target(
+    manifest_dir: &Path,
+    bin: &str,
+    normalized_bin: &str,
+) -> Result<Option<PathBuf>> {
+    let text = fs::read_to_string(manifest_dir.join("Cargo.toml"))
+        .map_err(|_| "error:\ncannot resolve crate".to_string())?;
+    let mut section = String::new();
+    let mut current_name = None::<String>;
+    let mut current_path = None::<String>;
+
+    let mut flush = |current_name: &mut Option<String>, current_path: &mut Option<String>| {
+        if current_name
+            .as_ref()
+            .map(|name| normalize_crate_name(name) == normalized_bin)
+            .unwrap_or(false)
+        {
+            let path = current_path
+                .as_ref()
+                .map(|path| manifest_dir.join(path))
+                .unwrap_or_else(|| manifest_dir.join("src/bin").join(format!("{bin}.rs")));
+            return Some(path);
+        }
+        *current_name = None;
+        *current_path = None;
+        None
+    };
+
+    for raw_line in text.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            if section == "bin" {
+                if let Some(path) = flush(&mut current_name, &mut current_path) {
+                    return Ok(Some(path));
+                }
+            }
+            section = line.trim_matches(['[', ']'].as_ref()).to_string();
+            current_name = None;
+            current_path = None;
+            continue;
+        }
+        if section != "bin" {
+            continue;
+        }
+        if let Some(name) = parse_toml_string_field(line, "name") {
+            current_name = Some(name);
+        }
+        if let Some(path) = parse_toml_string_field(line, "path") {
+            current_path = Some(path);
+        }
+    }
+
+    if section == "bin" {
+        if let Some(path) = flush(&mut current_name, &mut current_path) {
+            return Ok(Some(path));
+        }
+    }
+
+    Ok(None)
 }
 
 fn find_workspace_root(input: &Path) -> Result<PathBuf> {
@@ -104,6 +265,7 @@ fn find_workspace_root(input: &Path) -> Result<PathBuf> {
     }
 }
 
+#[derive(Clone)]
 struct Workspace {
     manifest: Manifest,
 }

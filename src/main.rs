@@ -1,4 +1,5 @@
 use proc_macro2::Span;
+use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
@@ -162,29 +163,73 @@ fn resolve_bin_target(workspace: &Workspace, bin: &str) -> Result<PathBuf> {
         return Ok(path);
     }
 
-    let conventional = [
-        manifest_dir.join("src/bin").join(format!("{bin}.rs")),
-        manifest_dir.join("src/bin").join(bin).join("main.rs"),
-        manifest_dir.join("examples").join(format!("{bin}.rs")),
-        manifest_dir.join("tests").join(format!("{bin}.rs")),
-    ];
-    if let Some(path) = conventional.into_iter().find(|path| path.exists()) {
-        return Ok(path);
+    let cargotoml_path = get_cargo_toml_path(env::current_dir().unwrap().as_path())?;
+    let cargotoml = get_cargotoml_bin(&cargotoml_path);
+    // cargotoml_pathはファイルを返すので、parentが使える
+    let bin_path = cargotoml.get_path_value_of_bin(
+        bin.to_string(),
+        env::current_dir().unwrap().as_path(),
+        &cargotoml_path,
+    )?;
+    if bin_path.exists() {
+        Ok(bin_path)
+    } else {
+        Err(format!("bin target `{bin}` was not found"))
     }
+}
 
-    if manifest
-        .package_name
-        .as_ref()
-        .map(|name| normalize_crate_name(name) == normalized_bin)
-        .unwrap_or(false)
-    {
-        let main_rs = manifest_dir.join("src/main.rs");
-        if main_rs.exists() {
-            return Ok(main_rs);
+fn get_cargo_toml_path(first: &Path) -> Result<PathBuf> {
+    let mut viewing_dir = first;
+    while let Some(parent) = viewing_dir.parent() {
+        if viewing_dir.join("Cargo.toml").exists() {
+            return Ok(viewing_dir.join("Cargo.toml"));
+        }
+        viewing_dir = parent;
+    }
+    Err("Cargo.toml not found".to_string())
+}
+
+#[derive(Deserialize, Debug, Clone)]
+struct CargoToml {
+    bin: Option<Vec<CargoTomlBinConfig>>,
+}
+
+impl CargoToml {
+    fn get_path_value_of_bin(
+        &self,
+        bin_name: String,
+        cur_dir: &Path,
+        cargotoml_path: &Path,
+    ) -> Result<PathBuf> {
+        //! cargotoml_pathにはCargo.tomlのファイルパスを指定すること
+        match &self.bin {
+            Some(vec) => {
+                let filtered: Vec<&CargoTomlBinConfig> =
+                    vec.iter().filter(|x| x.name == bin_name).collect();
+                if filtered.len() > 1 {
+                    Err("error:\nmultiple entries with the same `name` key in the `bin` section of Cargo.toml".to_string())
+                } else {
+                    let relative_bin_path = filtered[0].path.clone();
+                    let abs_path = cargotoml_path.parent().unwrap().join(relative_bin_path);
+                    Ok(abs_path)
+                }
+            }
+            None => Err("error:\n`bin` section in Cargo.toml not found".to_string()),
         }
     }
+}
 
-    Err(format!("bin target `{bin}` was not found"))
+#[derive(Deserialize, Debug, Clone)]
+struct CargoTomlBinConfig {
+    name: String,
+    path: String,
+}
+
+fn get_cargotoml_bin(toml_path: &Path) -> CargoToml {
+    //! get_cargo_toml_pathで取得したパスを使うことを想定しているので、unwrapを使う
+    let toml_str: String = fs::read_to_string(toml_path.to_str().unwrap()).unwrap();
+    let cargotoml: CargoToml = toml::from_str(&toml_str).unwrap();
+    cargotoml
 }
 
 fn resolve_explicit_bin_target(
@@ -198,7 +243,7 @@ fn resolve_explicit_bin_target(
     let mut current_name = None::<String>;
     let mut current_path = None::<String>;
 
-    let mut flush = |current_name: &mut Option<String>, current_path: &mut Option<String>| {
+    let flush = |current_name: &mut Option<String>, current_path: &mut Option<String>| {
         if current_name
             .as_ref()
             .map(|name| normalize_crate_name(name) == normalized_bin)

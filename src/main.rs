@@ -208,6 +208,8 @@ impl CargoToml {
                     vec.iter().filter(|x| x.name == bin_name).collect();
                 if filtered.len() > 1 {
                     Err("error:\nmultiple entries with the same `name` key in the `bin` section of Cargo.toml".to_string())
+                } else if filtered.len() == 0 {
+                    Err("error:\n`bin` section in Cargo.toml not found".to_string())
                 } else {
                     let relative_bin_path = filtered[0].path.clone();
                     let abs_path = cargotoml_path.parent().unwrap().join(relative_bin_path);

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ac-lib-bundle"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "pathdiff",
  "proc-macro2",

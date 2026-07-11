@@ -27,7 +27,7 @@ fn run() -> Result<()> {
             find_workspace_root(&std::env::current_dir().map_err(|e| e.to_string())?)?
         }
     };
-    let workspace = Workspace::load(&workspace_root)?;
+    let workspace = Workspace::load(&workspace_root.join("Cargo.toml"))?;
     let mut bundler = Bundler::new(workspace.clone());
 
     let input = resolve_input_path(&args.input, &workspace)?;
@@ -163,7 +163,8 @@ fn resolve_bin_target(workspace: &Workspace, bin: &str) -> Result<PathBuf> {
         return Ok(path);
     }
 
-    let cargotoml_path = get_cargo_toml_path(env::current_dir().unwrap().as_path())?;
+    let cargotoml_path =
+        find_workspace_root(env::current_dir().unwrap().as_path())?.join("Cargo.toml");
     let cargotoml = get_cargotoml_bin(&cargotoml_path);
     // cargotoml_pathはファイルを返すので、parentが使える
     let bin_path = cargotoml.get_path_value_of_bin(
@@ -176,17 +177,6 @@ fn resolve_bin_target(workspace: &Workspace, bin: &str) -> Result<PathBuf> {
     } else {
         Err(format!("bin target `{bin}` was not found"))
     }
-}
-
-fn get_cargo_toml_path(first: &Path) -> Result<PathBuf> {
-    let mut viewing_dir = first;
-    while let Some(parent) = viewing_dir.parent() {
-        if viewing_dir.join("Cargo.toml").exists() {
-            return Ok(viewing_dir.join("Cargo.toml"));
-        }
-        viewing_dir = parent;
-    }
-    Err("Cargo.toml not found".to_string())
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -296,6 +286,7 @@ fn resolve_explicit_bin_target(
     Ok(None)
 }
 
+// この`find_workspace_root`はディレクトリを返す。
 fn find_workspace_root(input: &Path) -> Result<PathBuf> {
     let mut current = input
         .parent()
@@ -332,6 +323,7 @@ struct Manifest {
 }
 
 impl Manifest {
+    // この関数はファイルパスを指定されることが前提
     fn load(manifest_path: &Path) -> Result<Self> {
         let manifest_dir = manifest_path
             .parent()

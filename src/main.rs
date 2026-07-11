@@ -27,7 +27,7 @@ fn run() -> Result<()> {
             find_workspace_root(&std::env::current_dir().map_err(|e| e.to_string())?)?
         }
     };
-    let workspace = Workspace::load(&workspace_root.join("Cargo.toml"))?;
+    let workspace = Workspace::load(&workspace_root)?;
     let mut bundler = Bundler::new(workspace.clone());
 
     let input = resolve_input_path(&args.input, &workspace)?;

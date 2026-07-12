@@ -21,11 +21,10 @@ fn run() -> Result<()> {
         InputSpec::Path(path) => {
             let input = fs::canonicalize(path)
                 .map_err(|_| format!("error:\ninput file not found: {}", path.display()))?;
-            find_workspace_root(&input, None)?
+            find_workspace_root(&input)?
         }
         InputSpec::Bin(_) => {
-            let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-            find_workspace_root(&cwd, None)?
+            find_workspace_root(&std::env::current_dir().map_err(|e| e.to_string())?)?
         }
     };
     let workspace = Workspace::load(&workspace_root)?;
@@ -164,36 +163,19 @@ fn resolve_bin_target(workspace: &Workspace, bin: &str) -> Result<PathBuf> {
         return Ok(path);
     }
 
-    let current_dir = env::current_dir().map_err(|e| e.to_string())?;
-    let cargotoml_path = get_cargo_toml_path(current_dir.as_path())?;
+    let cargotoml_path = get_cargo_toml_path(env::current_dir().unwrap().as_path())?;
     let cargotoml = get_cargotoml_bin(&cargotoml_path);
-    if let Some(bin_path) =
-        cargotoml.get_path_value_of_bin(bin.to_string(), current_dir.as_path(), &cargotoml_path)
-    {
-        if bin_path.exists() {
-            return Ok(bin_path);
-        }
+    // cargotoml_pathはファイルを返すので、parentが使える
+    let bin_path = cargotoml.get_path_value_of_bin(
+        bin.to_string(),
+        env::current_dir().unwrap().as_path(),
+        &cargotoml_path,
+    )?;
+    if bin_path.exists() {
+        Ok(bin_path)
+    } else {
+        Err(format!("bin target `{bin}` was not found"))
     }
-
-    let candidate_paths = [
-        manifest_dir.join("src/bin").join(format!("{bin}.rs")),
-        manifest_dir.join("src/bin").join(bin).join("main.rs"),
-        manifest_dir
-            .join("src/bin")
-            .join(format!("{normalized_bin}.rs")),
-        manifest_dir
-            .join("src/bin")
-            .join(&normalized_bin)
-            .join("main.rs"),
-    ];
-
-    for candidate in candidate_paths {
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-
-    Err(format!("bin target `{bin}` was not found"))
 }
 
 fn get_cargo_toml_path(first: &Path) -> Result<PathBuf> {
@@ -216,32 +198,25 @@ impl CargoToml {
     fn get_path_value_of_bin(
         &self,
         bin_name: String,
-        _cur_dir: &Path,
+        cur_dir: &Path,
         cargotoml_path: &Path,
-    ) -> Option<PathBuf> {
+    ) -> Result<PathBuf> {
         //! cargotoml_pathにはCargo.tomlのファイルパスを指定すること
         match &self.bin {
             Some(vec) => {
-                let normalized = normalize_crate_name(&bin_name);
-                let filtered: Vec<&CargoTomlBinConfig> = vec
-                    .iter()
-                    .filter(|x| {
-                        normalize_crate_name(&x.name) == normalized
-                            || x.name == bin_name
-                            || normalize_crate_name(&x.path) == normalized
-                    })
-                    .collect();
+                let filtered: Vec<&CargoTomlBinConfig> =
+                    vec.iter().filter(|x| x.name == bin_name).collect();
                 if filtered.len() > 1 {
-                    None
-                } else if filtered.is_empty() {
-                    None
+                    Err("error:\nmultiple entries with the same `name` key in the `bin` section of Cargo.toml".to_string())
+                } else if filtered.len() == 0 {
+                    Err("error:\n`bin` section in Cargo.toml not found".to_string())
                 } else {
                     let relative_bin_path = filtered[0].path.clone();
                     let abs_path = cargotoml_path.parent().unwrap().join(relative_bin_path);
-                    Some(abs_path)
+                    Ok(abs_path)
                 }
             }
-            None => None,
+            None => Err("error:\n`bin` section in Cargo.toml not found".to_string()),
         }
     }
 }
@@ -323,30 +298,18 @@ fn resolve_explicit_bin_target(
     Ok(None)
 }
 
-fn find_workspace_root(input: &Path, _skip_manifest: Option<&Path>) -> Result<PathBuf> {
-    let mut current = if input.is_dir() {
-        input.to_path_buf()
-    } else {
-        input
-            .parent()
-            .ok_or_else(|| "error:\ncannot resolve crate".to_string())?
-            .to_path_buf()
-    };
-
+fn find_workspace_root(input: &Path) -> Result<PathBuf> {
+    let mut current = input
+        .parent()
+        .ok_or_else(|| "error:\ncannot resolve crate".to_string())?;
     loop {
         if current.join("Cargo.toml").exists() {
-            return Ok(current);
+            return Ok(current.to_path_buf());
         }
-        let parent = current
+        current = current
             .parent()
             .ok_or_else(|| "error:\ncannot resolve crate".to_string())?;
-        if parent == current {
-            break;
-        }
-        current = parent.to_path_buf();
     }
-
-    Err("error:\ncannot resolve crate".to_string())
 }
 
 #[derive(Clone)]
@@ -925,59 +888,4 @@ fn loc_to_offset(line: usize, column: usize, line_starts: &[usize]) -> Result<us
 fn module_not_found_error(path: &Path) -> String {
     let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
     format!("error:\nmodule \"{name}\" not found")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn find_workspace_root_accepts_directory_containing_cargo_toml() {
-        let unique = format!(
-            "ac-lib-bundle-test-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
-        let root = std::env::temp_dir().join(unique);
-        fs::create_dir_all(&root).unwrap();
-        fs::write(
-            root.join("Cargo.toml"),
-            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
-        )
-        .unwrap();
-
-        let resolved = find_workspace_root(&root, None).unwrap();
-        assert_eq!(resolved, root);
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn manifest_loads_at_coder_workspace_manifest() {
-        let workspace_root = PathBuf::from("/home/tdn/at-coder");
-        let manifest = Manifest::load(&workspace_root.join("Cargo.toml")).unwrap();
-        assert!(manifest.package_name.is_some());
-    }
-
-    #[test]
-    fn resolve_bin_target_finds_workspace_bin() {
-        let workspace_root = PathBuf::from("/home/tdn/at-coder");
-        let workspace = Workspace::load(&workspace_root).unwrap();
-        let resolved = resolve_bin_target(&workspace, "awc0110-c").unwrap();
-        assert!(resolved.ends_with("src/problem/src/bin/awc0110-c.rs"));
-    }
-
-    #[test]
-    fn bundle_input_for_workspace_bin_succeeds() {
-        let workspace_root = PathBuf::from("/home/tdn/at-coder");
-        let workspace = Workspace::load(&workspace_root).unwrap();
-        let input = resolve_bin_target(&workspace, "awc0110-c").unwrap();
-        let mut bundler = Bundler::new(workspace);
-        let output = bundler.bundle_input(&input).unwrap();
-        assert!(output.contains("use proconio::input;"));
-    }
 }
